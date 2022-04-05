@@ -3,9 +3,18 @@ import requests
 from time import sleep
 import time
 import smtplib
+import requests
+import numpy as np
+import tweepy
+import json
+import os
+from dotenv import load_dotenv
 
-from flask import Flask
+from flask import Flask, redirect, request_tearing_down, url_for, request
 from flask_sqlalchemy import SQLAlchemy
+import twitterFunctions as tF
+import amazonFunctions as aF
+
 app = Flask(__name__)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///data.db'
@@ -17,53 +26,34 @@ class User(db.Model):
     name = db.Column(db.String(20), unique=False, nullable=False)
     products = db.Column(db.String(120))
 
+    # additional values for potential use, need to add them though SQL commands
+    #discordNotification = db.Column(db.Boolean())
+    #discordHandle = db.Column(db.String(30))
+
     def __repr__(self):
         return f"{self.name} - {self.products}"
 
-def check(url):
-    headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.90 Safari/537.36'}
-     
-    # adding headers to show that you are
-    # a browser who is sending GET request
-    page = requests.get(url, headers = headers)
-    for i in range(20):
-        # because continuous checks in
-        # milliseconds or few seconds
-        # blocks your request
-        sleep(3)
-         
-        # parsing the html content
-        doc = html.fromstring(page.content)
-         
-        # checking availability
-        XPATH_AVAILABILITY = '//div[@id ="availability"]//text()'
-        RAw_AVAILABILITY = doc.xpath(XPATH_AVAILABILITY)
-        AVAILABILITY = ''.join(RAw_AVAILABILITY).strip() if RAw_AVAILABILITY else None
-        return AVAILABILITY
+class preDefItems(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(30))
+    description = db.Column(db.String(100), unique=False)
+    amazonASIN = db.Column(db.String(20))
+    amazonAvailability = db.Column(db.String(20))
+    amazonPrice = db.Column(db.String(20))
+    amazonQuantity = db.Column(db.Float)
 
-def ReadAsin(productID):
-    # Asin Id is the product Id which
-    # needs to be provided by the user
-    Asin = productID
-    url = "http://www.amazon.com/dp/" + Asin
-    print ("Processing: "+url)
-    ans = check(url)
-    arr = [
-        'Only 1 left in stock.',
-        'Only 2 left in stock.',
-        'In stock.']
-    if ans in arr:
-        return "Available"
-    return "Out of Stock"
+    def __repr__(self):
+        return f"{self.name} - {self.description} - {self.amazonASIN} - {self.amazonAvailability}"
 
 @app.route('/')
-def index():
+def Index():
     return {'Hello!': "name"}
 
 @app.route('/users')
-def get_users():
+def GetUsers():
+    # returns the users in database
     users = User.query.all()
-
+    print("in funct")
     output = []
     for user in users:
         user_data = {'name':user.name, 'products': user.products}
@@ -72,7 +62,39 @@ def get_users():
     return {"users": output}
 
 @app.route('/users/<id>')
-def get_drink(id):
+def get_user(id):
+    # returns specific user in database
     user = User.query.get_or_404(id)
-    return {"name": user.name, "products": user.products, "available": ReadAsin(user.products)}
+    return {"name": user.name, "products": user.products}
 
+@app.route('/predefItems', methods=['POST', 'GET'])
+def LoadPredefItems():
+    if request.method == 'GET':
+        # returns all items in database
+        items = preDefItems.query.all()
+        output = []
+        for item in items:
+            item_data = {'name':item.name, 'description': item.description, 'asin': item.amazonASIN,
+             'availability': item.amazonAvailability, 'price': item.amazonPrice, 'stock': item.amazonQuantity}
+            output.append(item_data)
+        return{"item-data": output}
+    
+    elif request.method == 'POST':
+        # get availability from amazon json reposnse
+        amazonJSON = aF.GetAvailabilityJSON(request.json['asin'])
+        availability = amazonJSON["stock_estimation"]["availability_message"]
+        price = amazonJSON["stock_estimation"]["price"]["value"]
+        quantity = amazonJSON["stock_estimation"]["stock_level"]
+
+        # create item and load onto database
+        item = preDefItems(name=request.json['name'], description=request.json['description'], 
+          amazonASIN=request.json["asin"], amazonAvailability = availability, amazonPrice = price, amazonQuantity = quantity)
+        db.session.add(item)
+        db.session.commit()
+        return{'id': item.id}
+
+@app.route('/amazon/<id>')
+def GetItemAvailability(id):
+    item = preDefItems.query.get_or_404(id)
+    return{'name':item.name, 'description': item.description, 'asin': item.amazonASIN,
+             'availability': item.amazonAvailability, 'price': item.amazonPrice, 'stock': item.amazonQuantity}
